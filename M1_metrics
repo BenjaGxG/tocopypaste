@@ -4,7 +4,7 @@
 -- recommendations against actual HR purchases.
 
 CREATE OR REPLACE TABLE
-  `wmt-c4a28f609a0b37a1ac8cc4f614.sandbox_vn5a7xv.recommendation_performance_daily`
+  `w***mt-c4a28f609a0b37a1ac***8cc4f614.sandbox_vn5a7xv.recommendation_performance_daily`
 AS
 
 -- DEV recommendations: select one recommendation batch per day
@@ -13,7 +13,7 @@ WITH recommendations_list_dev AS (
   SELECT
     EXTRACT(DATE FROM created_time) AS created_date,
     MIN(created_time) AS created_time
-  FROM `wmt-c4a28f609a0b37a1ac8cc4f614.cl_ai_home_replenishment_dev.pull_csv_output_format`
+  FROM `w***mt-c4a28f609a0b37a1ac8***cc4f614.cl_ai_home_replenishment_dev.pull_csv_output_format`
   WHERE EXTRACT(DATE FROM created_time) < DATE '2025-10-26'
   GROUP BY created_date
 ),
@@ -21,7 +21,7 @@ WITH recommendations_list_dev AS (
 -- DEV recommendations: retrieve full records for selected batches
 recommendations_raw_dev AS (
   SELECT *
-  FROM `wmt-c4a28f609a0b37a1ac8cc4f614.cl_ai_home_replenishment_dev.pull_csv_output_format`
+  FROM `w***mt-c4a28f609a0b37a1ac8***cc4f614.cl_ai_home_replenishment_dev.pull_csv_output_format`
   WHERE created_time IN (SELECT created_time FROM recommendations_list_dev)
 ),
 
@@ -30,14 +30,14 @@ recommendations_list_prod AS (
   SELECT
     EXTRACT(DATE FROM created_time) AS created_date,
     MIN(created_time) AS created_time
-  FROM `wmt-cd81fcdf8dd4c7fafd61cc7f19.cl_ai_home_replenishment_prod.pull_csv_output_format`
+  FROM `w***mt-cd81fcdf8dd4c7fafd61***cc7f19.cl_ai_home_replenishment_prod.pull_csv_output_format`
   GROUP BY created_date
 ),
 
 -- PROD recommendations: retrieve full records for selected batches
 recommendations_raw_prod AS (
   SELECT *
-  FROM `wmt-cd81fcdf8dd4c7fafd61cc7f19.cl_ai_home_replenishment_prod.pull_csv_output_format`
+  FROM `w***mt-cd81fcdf8dd4c7fafd***61cc7f19.cl_ai_home_replenishment_prod.pull_csv_output_format`
   WHERE created_time IN (SELECT created_time FROM recommendations_list_prod)
 ),
 
@@ -93,7 +93,7 @@ cust_id_date_with_hr_purchase AS (
     walmart_id AS cust_id,
     trx_date AS order_date,
     COUNT(*) AS order_qty
-  FROM `wmt-c4a28f609a0b37a1ac8cc4f614.auto_basket_cl.customer_tag_orders`
+  FROM `w***mt-c4a28f609a0b37a1ac8***cc4f614.auto_basket_cl.customer_tag_orders`
   WHERE trx_date >= DATE '2025-10-11'
     AND tag_group = 'HR'
   GROUP BY walmart_id, trx_date
