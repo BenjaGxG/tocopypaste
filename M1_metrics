@@ -1,0 +1,135 @@
+-- Objective:
+-- Build daily recommendation performance metrics by customer and date.
+-- The table measures contribution and precision of Walmart and additional product
+-- recommendations against actual HR purchases.
+
+CREATE OR REPLACE TABLE
+  `wmt-c4a28f609a0b37a1ac8cc4f614.sandbox_vn5a7xv.recommendation_performance_daily`
+AS
+
+-- DEV recommendations: select one recommendation batch per day
+--    (earliest created_time for each date before cutoff)
+WITH recommendations_list_dev AS (
+  SELECT
+    EXTRACT(DATE FROM created_time) AS created_date,
+    MIN(created_time) AS created_time
+  FROM `wmt-c4a28f609a0b37a1ac8cc4f614.cl_ai_home_replenishment_dev.pull_csv_output_format`
+  WHERE EXTRACT(DATE FROM created_time) < DATE '2025-10-26'
+  GROUP BY created_date
+),
+
+-- DEV recommendations: retrieve full records for selected batches
+recommendations_raw_dev AS (
+  SELECT *
+  FROM `wmt-c4a28f609a0b37a1ac8cc4f614.cl_ai_home_replenishment_dev.pull_csv_output_format`
+  WHERE created_time IN (SELECT created_time FROM recommendations_list_dev)
+),
+
+-- PROD recommendations: select one recommendation batch per day
+recommendations_list_prod AS (
+  SELECT
+    EXTRACT(DATE FROM created_time) AS created_date,
+    MIN(created_time) AS created_time
+  FROM `wmt-cd81fcdf8dd4c7fafd61cc7f19.cl_ai_home_replenishment_prod.pull_csv_output_format`
+  GROUP BY created_date
+),
+
+-- PROD recommendations: retrieve full records for selected batches
+recommendations_raw_prod AS (
+  SELECT *
+  FROM `wmt-cd81fcdf8dd4c7fafd61cc7f19.cl_ai_home_replenishment_prod.pull_csv_output_format`
+  WHERE created_time IN (SELECT created_time FROM recommendations_list_prod)
+),
+
+-- Union DEV and PROD recommendations
+recommendations_fusion AS (
+  SELECT * FROM recommendations_raw_dev
+  UNION ALL
+  SELECT * FROM recommendations_raw_prod
+),
+
+--  Flatten recommendation items JSON
+--    One row per customer, product and recommendation date
+recommendations AS (
+  SELECT
+    profile_id AS cust_id,
+    JSON_EXTRACT(items_json, '$.sku_id') AS prod_nbr,
+    JSON_EXTRACT(items_json, '$.score') AS score,
+    JSON_EXTRACT(items_json, '$.recommended_quantity') AS recommended_quantity,
+    JSON_EXTRACT(items_json, '$.is_additional_product') AS is_additional_product,
+    EXTRACT(DATE FROM created_time) AS recommendation_date
+  FROM recommendations_fusion,
+  UNNEST(JSON_EXTRACT_ARRAY(items)) AS items_json
+),
+
+-- Flag Walmart vs Additional Product recommendations
+incremental_all_results AS (
+  SELECT
+    cust_id,
+    prod_nbr,
+    score,
+    CASE WHEN is_additional_product = 'true' THEN 0 ELSE 1 END AS wmt_rec,
+    CASE WHEN is_additional_product = 'true' THEN 1 ELSE 0 END AS additional_product,
+    recommendation_date,
+    recommended_quantity
+  FROM recommendations
+),
+
+-- Aggregate recommended products per customer and date
+recommendations_metrics AS (
+  SELECT
+    cust_id,
+    recommendation_date,
+    SUM(wmt_rec) AS recommended_cl,
+    SUM(additional_product) AS recommended_ap,
+    SUM(wmt_rec + additional_product) AS recommended_all
+  FROM incremental_all_results
+  GROUP BY cust_id, recommendation_date
+),
+
+-- HR purchases per customer and date
+cust_id_date_with_hr_purchase AS (
+  SELECT
+    walmart_id AS cust_id,
+    trx_date AS order_date,
+    COUNT(*) AS order_qty
+  FROM `wmt-c4a28f609a0b37a1ac8cc4f614.auto_basket_cl.customer_tag_orders`
+  WHERE trx_date >= DATE '2025-10-11'
+    AND tag_group = 'HR'
+  GROUP BY walmart_id, trx_date
+),
+
+-- Join recommendations with purchases to calculate performance metrics
+metrics AS (
+  SELECT
+    c.cust_id,
+    c.order_date,
+    AVG(c.order_qty) AS purchased,
+    SUM(i.wmt_rec) AS purchased_recommended_cl,
+    SUM(i.additional_product) AS purchased_recommended_ap,
+    SUM(i.wmt_rec + i.additional_product) AS purchased_recommended_all,
+    MAX(r.recommended_cl) AS recommended_cl,
+    MAX(r.recommended_ap) AS recommended_ap,
+    MAX(r.recommended_all) AS recommended_all
+  FROM incremental_all_results i
+  INNER JOIN cust_id_date_with_hr_purchase c
+    ON i.cust_id = c.cust_id
+   AND i.recommendation_date = c.order_date
+  INNER JOIN recommendations_metrics r
+    ON r.cust_id = c.cust_id
+   AND r.recommendation_date = c.order_date
+  GROUP BY c.cust_id, c.order_date
+)
+
+-- Final metrics: contribution and precision
+SELECT
+  cust_id,
+  order_date,
+  SAFE_DIVIDE(purchased_recommended_cl, purchased) AS contribution_cl,
+  SAFE_DIVIDE(purchased_recommended_ap, purchased) AS contribution_ap,
+  SAFE_DIVIDE(purchased_recommended_all, purchased) AS contribution_all,
+  SAFE_DIVIDE(purchased_recommended_cl, recommended_cl) AS precision_cl,
+  SAFE_DIVIDE(purchased_recommended_ap, recommended_ap) AS precision_ap,
+  SAFE_DIVIDE(purchased_recommended_all, recommended_all) AS precision_all
+FROM metrics
+WHERE order_date >= DATE '2025-10-11';
