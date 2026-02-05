@@ -1,55 +1,92 @@
--- Objective:
--- Build daily recommendation performance metrics by customer and date.
--- The table measures contribution and precision of Walmart and additional product
--- recommendations against actual HR purchases.
+/* 
+========================================================
+TABLA: recommendation_performance_daily
+DESCRIPCIÓN:
+Tabla diaria de performance del modelo de recomendaciones
+Auto Basket (CL). Contiene métricas de contribution y
+precision a nivel cliente-día, lista para consumo BI
+(Power BI / Looker / dashboards corporativos).
+
+GRANO:
+- 1 fila por cliente (cust_id)
+- 1 fila por día (order_date)
+
+FUENTE:
+- Recomendaciones DEV + PROD
+- Compras reales HR
+========================================================
+*/
 
 CREATE OR REPLACE TABLE
-  `w***mt-c4a28f609a0b37a1ac***8cc4f614.sandbox_vn5a7xv.recommendation_performance_daily`
+`wmt-c4a28f609a0b37a1ac0cc4f614.auto_basket_cl.recommendation_performance_daily`
 AS
 
--- DEV recommendations: select one recommendation batch per day
---    (earliest created_time for each date before cutoff)
-WITH recommendations_list_dev AS (
+WITH
+/* ======================================================
+1. SELECCIÓN DE LA EJECUCIÓN DIARIA DEL MODELO (DEV)
+Para cada día se toma la PRIMERA ejecución del modelo
+(created_time mínimo), evitando duplicados diarios.
+====================================================== */
+recommendations_list_dev AS (
   SELECT
     EXTRACT(DATE FROM created_time) AS created_date,
     MIN(created_time) AS created_time
-  FROM `w***mt-c4a28f609a0b37a1ac8***cc4f614.cl_ai_home_replenishment_dev.pull_csv_output_format`
+  FROM `wmt-c4a28f609a0b37a1ac0cc4f614.cl_ai_home_replenishment_dev.pull_csv_output_format`
   WHERE EXTRACT(DATE FROM created_time) < DATE '2025-10-26'
   GROUP BY created_date
 ),
 
--- DEV recommendations: retrieve full records for selected batches
+/* ======================================================
+2. RECOMENDACIONES DEV FILTRADAS
+Se traen solo las recomendaciones correspondientes
+a la ejecución diaria seleccionada.
+====================================================== */
 recommendations_raw_dev AS (
   SELECT *
-  FROM `w***mt-c4a28f609a0b37a1ac8***cc4f614.cl_ai_home_replenishment_dev.pull_csv_output_format`
-  WHERE created_time IN (SELECT created_time FROM recommendations_list_dev)
+  FROM `wmt-c4a28f609a0b37a1ac0cc4f614.cl_ai_home_replenishment_dev.pull_csv_output_format`
+  WHERE created_time IN (
+    SELECT created_time FROM recommendations_list_dev
+  )
 ),
 
--- PROD recommendations: select one recommendation batch per day
+/* ======================================================
+3. SELECCIÓN DE LA EJECUCIÓN DIARIA DEL MODELO (PROD)
+Misma lógica que DEV pero para ambiente productivo.
+====================================================== */
 recommendations_list_prod AS (
   SELECT
     EXTRACT(DATE FROM created_time) AS created_date,
     MIN(created_time) AS created_time
-  FROM `w***mt-cd81fcdf8dd4c7fafd61***cc7f19.cl_ai_home_replenishment_prod.pull_csv_output_format`
+  FROM `wmt-cd81fcdf8dd4c7fafd61cc7f19.cl_ai_home_replenishment_prod.pull_csv_output_format`
   GROUP BY created_date
 ),
 
--- PROD recommendations: retrieve full records for selected batches
+/* ======================================================
+4. RECOMENDACIONES PROD FILTRADAS
+====================================================== */
 recommendations_raw_prod AS (
   SELECT *
-  FROM `w***mt-cd81fcdf8dd4c7fafd***61cc7f19.cl_ai_home_replenishment_prod.pull_csv_output_format`
-  WHERE created_time IN (SELECT created_time FROM recommendations_list_prod)
+  FROM `wmt-cd81fcdf8dd4c7fafd61cc7f19.cl_ai_home_replenishment_prod.pull_csv_output_format`
+  WHERE created_time IN (
+    SELECT created_time FROM recommendations_list_prod
+  )
 ),
 
--- Union DEV and PROD recommendations
+/* ======================================================
+5. UNIÓN DEV + PROD
+Se consolida el histórico completo de recomendaciones.
+====================================================== */
 recommendations_fusion AS (
   SELECT * FROM recommendations_raw_dev
   UNION ALL
   SELECT * FROM recommendations_raw_prod
 ),
 
---  Flatten recommendation items JSON
---    One row per customer, product and recommendation date
+/* ======================================================
+6. EXPLOSIÓN DEL JSON DE ITEMS RECOMENDADOS
+Se desarma el JSON para obtener un registro por producto
+recomendado a cada cliente.
+====================================================== */
 recommendations AS (
   SELECT
     profile_id AS cust_id,
@@ -62,20 +99,33 @@ recommendations AS (
   UNNEST(JSON_EXTRACT_ARRAY(items)) AS items_json
 ),
 
--- Flag Walmart vs Additional Product recommendations
+/* ======================================================
+7. NORMALIZACIÓN DE TIPOS DE RECOMENDACIÓN
+- wmt_rec = recomendaciones core del modelo
+- additional_product = productos adicionales
+====================================================== */
 incremental_all_results AS (
   SELECT
     cust_id,
     prod_nbr,
     score,
-    CASE WHEN is_additional_product = 'true' THEN 0 ELSE 1 END AS wmt_rec,
-    CASE WHEN is_additional_product = 'true' THEN 1 ELSE 0 END AS additional_product,
+    CASE 
+      WHEN is_additional_product = 'true' THEN 0 
+      ELSE 1 
+    END AS wmt_rec,
+    CASE 
+      WHEN is_additional_product = 'true' THEN 1 
+      ELSE 0 
+    END AS additional_product,
     recommendation_date,
     recommended_quantity
   FROM recommendations
 ),
 
--- Aggregate recommended products per customer and date
+/* ======================================================
+8. MÉTRICAS DE RECOMENDACIONES GENERADAS
+Cantidad de recomendaciones por cliente y día.
+====================================================== */
 recommendations_metrics AS (
   SELECT
     cust_id,
@@ -87,19 +137,25 @@ recommendations_metrics AS (
   GROUP BY cust_id, recommendation_date
 ),
 
--- HR purchases per customer and date
+/* ======================================================
+9. COMPRAS REALES HR POR CLIENTE Y DÍA
+Representa el comportamiento real de compra.
+====================================================== */
 cust_id_date_with_hr_purchase AS (
   SELECT
     walmart_id AS cust_id,
     trx_date AS order_date,
     COUNT(*) AS order_qty
-  FROM `w***mt-c4a28f609a0b37a1ac8***cc4f614.auto_basket_cl.customer_tag_orders`
+  FROM `wmt-c4a28f609a0b37a1ac8cc4f614.auto_basket_cl.customer_tag_orders`
   WHERE trx_date >= DATE '2025-10-11'
     AND tag_group = 'HR'
   GROUP BY walmart_id, trx_date
 ),
 
--- Join recommendations with purchases to calculate performance metrics
+/* ======================================================
+10. CÁLCULO DE MÉTRICAS BASE
+Se cruzan recomendaciones con compras reales.
+====================================================== */
 metrics AS (
   SELECT
     c.cust_id,
@@ -121,7 +177,10 @@ metrics AS (
   GROUP BY c.cust_id, c.order_date
 )
 
--- Final metrics: contribution and precision
+/* ======================================================
+11. MÉTRICAS FINALES PARA BI
+Contribution y Precision listas para dashboard.
+====================================================== */
 SELECT
   cust_id,
   order_date,
