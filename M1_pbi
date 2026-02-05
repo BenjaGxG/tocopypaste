@@ -1,0 +1,11 @@
+SELECT
+  cust_id,
+  order_date,
+  contribution_cl,
+  contribution_ap,
+  contribution_all,
+  precision_cl,
+  precision_ap,
+  precision_all
+FROM `wm***t-c4a28f609a0b37a1ac0
+***cc4f614.auto_basket_cl.recommendation_performance_daily`;
